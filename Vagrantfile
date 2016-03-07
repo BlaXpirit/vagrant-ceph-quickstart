@@ -36,29 +36,13 @@ Vagrant.configure(2) do |config|
         fi
         cat ~/ssh/id_rsa.pub >>~/.ssh/authorized_keys
       SHELL
-
-      if i > 1
-        disk = "disk/osd#{i-2}.vdi"
-        node.vm.provider "virtualbox" do |vb|
-          unless File.exist?(disk)
-            vb.customize ['createmedium', '--filename', disk, '--size', 500]
-          end
-          vb.customize ['storageattach', :id, '--storagectl', 'SATA Controller', '--port', 1, '--device', 0, '--type', 'hdd', '--medium', disk]
-        end
-
-        node.vm.provision :shell, inline: <<-SHELL
-          apt-get install -y parted
-          /sbin/parted /dev/sdb mklabel msdos
-          /sbin/parted /dev/sdb mkpart primary 512 100%
-        SHELL
-      end
     end
   end
 
   config.vm.define "admin-node", primary: true do |node|
     node.vm.host_name = "admin-node"
 
-    node.vm.synced_folder "cluster", "/home/vagrant/cluster"
+    #node.vm.synced_folder "cluster", "/home/vagrant/cluster"
 
     node.vm.provision :shell, inline: <<-SHELL
       curl https://download.ceph.com/keys/release.asc | apt-key add -
@@ -73,12 +57,14 @@ Vagrant.configure(2) do |config|
 
       if [ ! -f ~/.ssh/config ]; then
         mv ~/ssh/id_rsa ~/.ssh/
+        cat ~/ssh/id_rsa.pub >>~/.ssh/authorized_keys
         rm ~/ssh/id_rsa.pub
 
-        echo 'Host node*'                      >~/.ssh/config
-        echo '  User vagrant'                 >>~/.ssh/config
-        echo '  StrictHostKeyChecking no'     >>~/.ssh/config
-        echo '  UserKnownHostsFile=/dev/null' >>~/.ssh/config
+        echo 'Host *node*'                 >~/.ssh/config
+        echo '  User vagrant'             >>~/.ssh/config
+        echo '  StrictHostKeyChecking no' >>~/.ssh/config
+
+        echo 'cd ~/cluster' >>~/.bashrc
       fi
 
       if [ ! -d cluster ]; then
@@ -92,24 +78,30 @@ Vagrant.configure(2) do |config|
       cd cluster
 
       ceph-deploy new node1
-      echo 'osd pool default size = 2' >>ceph.conf
+      echo 'osd_pool_default_size = 2' >>ceph.conf
 
       ceph-deploy install --release #{CEPH_RELEASE} admin-node node{1..3}
 
       ceph-deploy mon create-initial
 
-      for i in 2 3; do
-        #ssh node$i sudo chown ceph: /dev/sdb1
-        ceph-deploy osd create --fs-type ext4 node$i:/dev/sdb1
-      done
-
       ceph-deploy admin admin-node node{1..3}
       sudo chmod +r /etc/ceph/ceph.client.admin.keyring
+      for node in node{1..3}; do
+        ssh $node sudo chmod +r /etc/ceph/ceph.client.admin.keyring
+      done
 
-      ceph health
+      for i in {2..3}; do
+        ssh node$i sudo mkdir /var/local/osd$i
+        ssh node$i sudo chown ceph: /var/local/osd$i
+        ceph-deploy osd prepare node$i:/var/local/osd$i
+        ssh node$i sudo chown -R ceph: /var/local/osd$i
+        ceph-deploy osd activate node$i:/var/local/osd$i
+      done
 
-      ceph-deploy mds create node1
-      ceph-deploy rgw create node1
+      #ceph health
+
+      #ceph-deploy mds create node1
+      #ceph-deploy rgw create node1
     SHELL
   end
 end
